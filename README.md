@@ -123,3 +123,28 @@ python manage.py test news
 ```
 
 The code uses modular models, serializers, permissions, views, URL configurations and signals. User-facing article input is validated, permissions are checked at both endpoint and object level, and the external HTTP request has a timeout and exception handling.
+
+## 12. Sphinx documentation
+
+The Sphinx sources are in `docs/`. Install the packages from `requirements.txt`, then build the HTML documentation:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+python -m sphinx -b html docs docs\_build\html
+```
+
+Open `docs/_build/html/index.html`. Generated HTML is kept in Git for reviewers; virtual environments and temporary Sphinx doctrees are excluded.
+
+## 13. Docker
+
+Build and run the application with a persistent SQLite database volume:
+
+```powershell
+docker build -t daily-brief .
+docker volume create daily-brief-data
+docker run --rm -p 8000:8000 -v daily-brief-data:/data -e DJANGO_SECRET_KEY="replace-with-a-private-random-value" -e APPROVED_API_SECRET="replace-with-a-private-random-value" daily-brief
+```
+
+Open `http://127.0.0.1:8000/`. The container applies database migrations at startup and stores SQLite data in `/data`, which is backed by the named Docker volume. Use a private secret in real deployments, keep it out of Git, and configure `DJANGO_ALLOWED_HOSTS` to match the hostname used to access the service. This Dockerfile uses Django's development server to satisfy the portable training task; production deployment should use a production WSGI server and HTTPS.
