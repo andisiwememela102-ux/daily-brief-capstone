@@ -1,0 +1,52 @@
+# Django
+*.log
+*.pot
+*.pyc
+__pycache__/
+*$py.class
+db.sqlite3
+media/
+staticfiles/
+
+# Python packaging and generated files
+.Python
+build/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Local settings and virtual environments
+.env
+.venv/
+env/
+venv/
+ENV/
+
+# Test and type-check caches
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache/
+.pytest_cache/
+.mypy_cache/
+.hypothesis/
+
+# Editor and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Sphinx intermediate doctrees only. Keep docs/_build/html in Git as required.
+docs/_build/doctrees/

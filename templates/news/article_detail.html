@@ -1,0 +1,1 @@
+{% extends 'news/base.html' %}{% block content %}<article class="card"><h1>{{ article.title }}</h1><p class="muted">{{ article.created_at|date:'d M Y H:i' }}</p><p>{{ article.content|linebreaks }}</p><p class="muted">By {% if article.publisher %}{{ article.publisher.name }}{% else %}{{ article.author.username }}{% endif %}</p></article>{% endblock %}

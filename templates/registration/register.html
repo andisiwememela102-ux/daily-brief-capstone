@@ -1,0 +1,14 @@
+{% extends 'news/base.html' %}
+{% block title %}Create account | The Daily Brief{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>Create your account</h1>
+  <p class="muted">Join as a reader, journalist, or editor. You can sign in as soon as your account is created.</p>
+  <form method="post" novalidate>
+    {% csrf_token %}
+    {{ form.as_p }}
+    <button type="submit">Create account</button>
+  </form>
+  <p>Already have an account? <a href="{% url 'login' %}">Log in</a>.</p>
+</section>
+{% endblock %}
