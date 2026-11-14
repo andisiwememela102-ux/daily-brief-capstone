@@ -34,11 +34,11 @@ values are placeholders; use private values for ``DJANGO_SECRET_KEY`` and
 Set ``DB_ENGINE=mysql`` and provide the ``DB_*`` variables to use MariaDB. The
 container workflow uses a persistent SQLite volume by default.
 
-Build the Sphinx site
---------------------
+Build the Sphinx site`n---------------------
 
 With the project environment active, run::
 
    sphinx-build -b html docs docs/_build/html
 
 Open ``docs/_build/html/index.html`` in a browser to browse the generated site.
+
