@@ -50,3 +50,4 @@ Thumbs.db
 
 # Sphinx intermediate doctrees only. Keep docs/_build/html in Git as required.
 docs/_build/doctrees/
+**/.doctrees/
