@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+*.sqlite3
+
+# Sphinx temporary build state
+docs/_build/doctrees/
+
+# Git and editor files
+.git/
+.idea/
+.vscode/
