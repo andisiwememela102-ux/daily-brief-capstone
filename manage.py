@@ -1,4 +1,6 @@
 #!/usr/bin/env python
+"""Run Django management commands for the Daily Brief project."""
+
 import os
 import sys
 
