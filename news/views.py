@@ -1,3 +1,5 @@
+"""Render newsroom pages and handle registration and editorial actions."""
+
 from django.contrib import messages
 from django.contrib.auth import login
 from django.contrib.auth.decorators import login_required
@@ -8,11 +10,13 @@ from .models import Article, Newsletter, User
 
 
 def home(request):
+    """Render the home page with approved articles."""
     articles = Article.objects.filter(approved=True).select_related('author', 'publisher')
     return render(request, 'news/home.html', {'articles': articles})
 
 
 def register(request):
+    """Register a newsroom user, sign them in, and show validation errors."""
     if request.user.is_authenticated:
         return redirect('home')
     form = RegistrationForm(request.POST or None)
@@ -27,12 +31,14 @@ def register(request):
 
 @login_required
 def article_detail(request, pk):
+    """Display one approved article to an authenticated reader."""
     article = get_object_or_404(Article, pk=pk, approved=True)
     return render(request, 'news/article_detail.html', {'article': article})
 
 
 @login_required
 def review_articles(request):
+    """Display pending articles to editors for moderation."""
     if request.user.role != User.Role.EDITOR:
         raise PermissionDenied('Only editors may review articles.')
     pending = Article.objects.filter(approved=False).select_related('author', 'publisher')
@@ -41,6 +47,7 @@ def review_articles(request):
 
 @login_required
 def approve_article(request, pk):
+    """Approve a pending article through an editor-only POST request."""
     if request.method != 'POST' or request.user.role != User.Role.EDITOR:
         raise PermissionDenied('Only editors may approve articles using POST.')
     article = get_object_or_404(Article, pk=pk)
@@ -52,5 +59,6 @@ def approve_article(request, pk):
 
 @login_required
 def newsletter_list(request):
+    """Render newsletters and their related articles."""
     newsletters = Newsletter.objects.prefetch_related('articles').all()
     return render(request, 'news/newsletters.html', {'newsletters': newsletters})
