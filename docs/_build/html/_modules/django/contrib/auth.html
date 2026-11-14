@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+
+<html lang="en" data-content_root="../../../">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>django.contrib.auth &#8212; The Daily Brief 1.0.0 documentation</title>
+    <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=5ecbeea2" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/basic.css?v=b08954a9" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/alabaster.css?v=27fed22d" />
+    <script src="../../../_static/documentation_options.js?v=8d563738"></script>
+    <script src="../../../_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="../../../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <link rel="index" title="Index" href="../../../genindex.html" />
+    <link rel="search" title="Search" href="../../../search.html" />
+   
+  <link rel="stylesheet" href="../../../_static/custom.css" type="text/css" />
+  
+
+  
+  
+
+  </head><body>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          
+
+          <div class="body" role="main">
+            
+  <h1>Source code for django.contrib.auth</h1><div class="highlight"><pre>
+<span></span><span class="kn">import</span><span class="w"> </span><span class="nn">re</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">warnings</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">django.apps</span><span class="w"> </span><span class="kn">import</span> <span class="n">apps</span> <span class="k">as</span> <span class="n">django_apps</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">django.conf</span><span class="w"> </span><span class="kn">import</span> <span class="n">settings</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">django.core.exceptions</span><span class="w"> </span><span class="kn">import</span> <span class="n">ImproperlyConfigured</span><span class="p">,</span> <span class="n">PermissionDenied</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">django.middleware.csrf</span><span class="w"> </span><span class="kn">import</span> <span class="n">rotate_token</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">django.utils.crypto</span><span class="w"> </span><span class="kn">import</span> <span class="n">constant_time_compare</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">django.utils.deprecation</span><span class="w"> </span><span class="kn">import</span> <span class="n">RemovedInDjango61Warning</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">django.utils.inspect</span><span class="w"> </span><span class="kn">import</span> <span class="n">signature</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">django.utils.module_loading</span><span class="w"> </span><span class="kn">import</span> <span class="n">import_string</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">django.views.decorators.debug</span><span class="w"> </span><span class="kn">import</span> <span class="n">sensitive_variables</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">.signals</span><span class="w"> </span><span class="kn">import</span> <span class="n">user_logged_in</span><span class="p">,</span> <span class="n">user_logged_out</span><span class="p">,</span> <span class="n">user_login_failed</span>
+
+<span class="n">SESSION_KEY</span> <span class="o">=</span> <span class="s2">"_auth_user_id"</span>
+<span class="n">BACKEND_SESSION_KEY</span> <span class="o">=</span> <span class="s2">"_auth_user_backend"</span>
+<span class="n">HASH_SESSION_KEY</span> <span class="o">=</span> <span class="s2">"_auth_user_hash"</span>
+<span class="n">REDIRECT_FIELD_NAME</span> <span class="o">=</span> <span class="s2">"next"</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">load_backend</span><span class="p">(</span><span class="n">path</span><span class="p">):</span>
+    <span class="k">return</span> <span class="n">import_string</span><span class="p">(</span><span class="n">path</span><span class="p">)()</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_get_backends</span><span class="p">(</span><span class="n">return_tuples</span><span class="o">=</span><span class="kc">False</span><span class="p">):</span>
+    <span class="n">backends</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="k">for</span> <span class="n">backend_path</span> <span class="ow">in</span> <span class="n">settings</span><span class="o">.</span><span class="n">AUTHENTICATION_BACKENDS</span><span class="p">:</span>
+        <span class="n">backend</span> <span class="o">=</span> <span class="n">load_backend</span><span class="p">(</span><span class="n">backend_path</span><span class="p">)</span>
+        <span class="n">backends</span><span class="o">.</span><span class="n">append</span><span class="p">((</span><span class="n">backend</span><span class="p">,</span> <span class="n">backend_path</span><span class="p">)</span> <span class="k">if</span> <span class="n">return_tuples</span> <span class="k">else</span> <span class="n">backend</span><span class="p">)</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">backends</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="n">ImproperlyConfigured</span><span class="p">(</span>
+            <span class="s2">"No authentication backends have been defined. Does "</span>
+            <span class="s2">"AUTHENTICATION_BACKENDS contain anything?"</span>
+        <span class="p">)</span>
+    <span class="k">return</span> <span class="n">backends</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">get_backends</span><span class="p">():</span>
+    <span class="k">return</span> <span class="n">_get_backends</span><span class="p">(</span><span class="n">return_tuples</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_get_compatible_backends</span><span class="p">(</span><span class="n">request</span><span class="p">,</span> <span class="o">**</span><span class="n">credentials</span><span class="p">):</span>
+    <span class="k">for</span> <span class="n">backend</span><span class="p">,</span> <span class="n">backend_path</span> <span class="ow">in</span> <span class="n">_get_backends</span><span class="p">(</span><span class="n">return_tuples</span><span class="o">=</span><span class="kc">True</span><span class="p">):</span>
+        <span class="n">backend_signature</span> <span class="o">=</span> <span class="n">signature</span><span class="p">(</span><span class="n">backend</span><span class="o">.</span><span class="n">authenticate</span><span class="p">)</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">backend_signature</span><span class="o">.</span><span class="n">bind</span><span class="p">(</span><span class="n">request</span><span class="p">,</span> <span class="o">**</span><span class="n">credentials</span><span class="p">)</span>
+        <span class="k">except</span> <span class="ne">TypeError</span><span class="p">:</span>
+            <span class="c1"># This backend doesn't accept these credentials as arguments. Try</span>
+            <span class="c1"># the next one.</span>
+            <span class="k">continue</span>
+        <span class="k">yield</span> <span class="n">backend</span><span class="p">,</span> <span class="n">backend_path</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_get_backend_from_user</span><span class="p">(</span><span class="n">user</span><span class="p">,</span> <span class="n">backend</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">backend</span> <span class="o">=</span> <span class="n">backend</span> <span class="ow">or</span> <span class="n">user</span><span class="o">.</span><span class="n">backend</span>
+    <span class="k">except</span> <span class="ne">AttributeError</span><span class="p">:</span>
+        <span class="n">backends</span> <span class="o">=</span> <span class="n">_get_backends</span><span class="p">(</span><span class="n">return_tuples</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+        <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">backends</span><span class="p">)</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
+            <span class="n">_</span><span class="p">,</span> <span class="n">backend</span> <span class="o">=</span> <span class="n">backends</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+                <span class="s2">"You have multiple authentication backends configured and "</span>
+                <span class="s2">"therefore must provide the `backend` argument or set the "</span>
+                <span class="s2">"`backend` attribute on the user."</span>
+            <span class="p">)</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">backend</span><span class="p">,</span> <span class="nb">str</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span>
+                <span class="s2">"backend must be a dotted import path string (got </span><span class="si">%r</span><span class="s2">)."</span> <span class="o">%</span> <span class="n">backend</span>
+            <span class="p">)</span>
+    <span class="k">return</span> <span class="n">backend</span>
+
+
+<span class="nd">@sensitive_variables</span><span class="p">(</span><span class="s2">"credentials"</span><span class="p">)</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">_clean_credentials</span><span class="p">(</span><span class="n">credentials</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">"""</span>
+<span class="sd">    Clean a dictionary of credentials of potentially sensitive info before</span>
+<span class="sd">    sending to less secure functions.</span>
+
+<span class="sd">    Not comprehensive - intended for user_login_failed signal</span>
+<span class="sd">    """</span>
+    <span class="n">SENSITIVE_CREDENTIALS</span> <span class="o">=</span> <span class="n">re</span><span class="o">.</span><span class="n">compile</span><span class="p">(</span><span class="s2">"api|token|key|secret|password|signature"</span><span class="p">,</span> <span class="n">re</span><span class="o">.</span><span class="n">I</span><span class="p">)</span>
+    <span class="n">CLEANSED_SUBSTITUTE</span> <span class="o">=</span> <span class="s2">"********************"</span>
+    <span class="k">for</span> <span class="n">key</span> <span class="ow">in</span> <span class="n">credentials</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">SENSITIVE_CREDENTIALS</span><span class="o">.</span><span class="n">search</span><span class="p">(</span><span class="n">key</span><span class="p">):</span>
+            <span class="n">credentials</span><span class="p">[</span><span class="n">key</span><span class="p">]</span> <span class="o">=</span> <span class="n">CLEANSED_SUBSTITUTE</span>
+    <span class="k">return</span> <span class="n">credentials</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_get_user_session_key</span><span class="p">(</span><span class="n">request</span><span class="p">):</span>
+    <span class="c1"># This value in the session is always serialized to a string, so we need</span>
+    <span class="c1"># to convert it back to Python whenever we access it.</span>
+    <span class="k">return</span> <span class="n">get_user_model</span><span class="p">()</span><span class="o">.</span><span class="n">_meta</span><span class="o">.</span><span class="n">pk</span><span class="o">.</span><span class="n">to_python</span><span class="p">(</span><span class="n">request</span><span class="o">.</span><span class="n">session</span><span class="p">[</span><span class="n">SESSION_KEY</span><span class="p">])</span>
+
+
+<span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">_aget_user_session_key</span><span class="p">(</span><span class="n">request</span><span class="p">):</span>
+    <span class="c1"># This value in the session is always serialized to a string, so we need</span>
+    <span class="c1"># to convert it back to Python whenever we access it.</span>
+    <span class="n">session_key</span> <span class="o">=</span> <span class="k">await</span> <span class="n">request</span><span class="o">.</span><span class="n">session</span><span class="o">.</span><span class="n">aget</span><span class="p">(</span><span class="n">SESSION_KEY</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">session_key</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">KeyError</span><span class="p">()</span>
+    <span class="k">return</span> <span class="n">get_user_model</span><span class="p">()</span><span class="o">.</span><span class="n">_meta</span><span class="o">.</span><span class="n">pk</span><span class="o">.</span><span class="n">to_python</span><span class="p">(</span><span class="n">session_key</span><span class="p">)</span>
+
+
+<span class="nd">@sensitive_variables</span><span class="p">(</span><span class="s2">"credentials"</span><span class="p">)</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">authenticate</span><span class="p">(</span><span class="n">request</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="o">**</span><span class="n">credentials</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">"""</span>
+<span class="sd">    If the given credentials are valid, return a User object.</span>
+<span class="sd">    """</span>
+    <span class="k">for</span> <span class="n">backend</span><span class="p">,</span> <span class="n">backend_path</span> <span class="ow">in</span> <span class="n">_get_compatible_backends</span><span class="p">(</span><span class="n">request</span><span class="p">,</span> <span class="o">**</span><span class="n">credentials</span><span class="p">):</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">user</span> <span class="o">=</span> <span class="n">backend</span><span class="o">.</span><span class="n">authenticate</span><span class="p">(</span><span class="n">request</span><span class="p">,</span> <span class="o">**</span><span class="n">credentials</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">PermissionDenied</span><span class="p">:</span>
+            <span class="c1"># This backend says to stop in our tracks - this user should not be</span>
+            <span class="c1"># allowed in at all.</span>
+            <span class="k">break</span>
+        <span class="k">if</span> <span class="n">user</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">continue</span>
+        <span class="c1"># Annotate the user object with the path of the backend.</span>
+        <span class="n">user</span><span class="o">.</span><span class="n">backend</span> <span class="o">=</span> <span class="n">backend_path</span>
+        <span class="k">return</span> <span class="n">user</span>
+
+    <span class="c1"># The credentials supplied are invalid to all backends, fire signal</span>
+    <span class="n">user_login_failed</span><span class="o">.</span><span class="n">send</span><span class="p">(</span>
+        <span class="n">sender</span><span class="o">=</span><span class="vm">__name__</span><span class="p">,</span> <span class="n">credentials</span><span class="o">=</span><span class="n">_clean_credentials</span><span class="p">(</span><span class="n">credentials</span><span class="p">),</span> <span class="n">request</span><span class="o">=</span><span class="n">request</span>
+    <span class="p">)</span>
+
+
+<span class="nd">@sensitive_variables</span><span class="p">(</span><span class="s2">"credentials"</span><span class="p">)</span>
+<span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">aauthenticate</span><span class="p">(</span><span class="n">request</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="o">**</span><span class="n">credentials</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">"""See authenticate()."""</span>
+    <span class="k">for</span> <span class="n">backend</span><span class="p">,</span> <span class="n">backend_path</span> <span class="ow">in</span> <span class="n">_get_compatible_backends</span><span class="p">(</span><span class="n">request</span><span class="p">,</span> <span class="o">**</span><span class="n">credentials</span><span class="p">):</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">user</span> <span class="o">=</span> <span class="k">await</span> <span class="n">backend</span><span class="o">.</span><span class="n">aauthenticate</span><span class="p">(</span><span class="n">request</span><span class="p">,</span> <span class="o">**</span><span class="n">credentials</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">PermissionDenied</span><span class="p">:</span>
+            <span class="c1"># This backend says to stop in our tracks - this user should not be</span>
+            <span class="c1"># allowed in at all.</span>
+            <span class="k">break</span>
+        <span class="k">if</span> <span class="n">user</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">continue</span>
+        <span class="c1"># Annotate the user object with the path of the backend.</span>
+        <span class="n">user</span><span class="o">.</span><span class="n">backend</span> <span class="o">=</span> <span class="n">backend_path</span>
+        <span class="k">return</span> <span class="n">user</span>
+
+    <span class="c1"># The credentials supplied are invalid to all backends, fire signal.</span>
+    <span class="k">await</span> <span class="n">user_login_failed</span><span class="o">.</span><span class="n">asend</span><span class="p">(</span>
+        <span class="n">sender</span><span class="o">=</span><span class="vm">__name__</span><span class="p">,</span> <span class="n">credentials</span><span class="o">=</span><span class="n">_clean_credentials</span><span class="p">(</span><span class="n">credentials</span><span class="p">),</span> <span class="n">request</span><span class="o">=</span><span class="n">request</span>
+    <span class="p">)</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">login</span><span class="p">(</span><span class="n">request</span><span class="p">,</span> <span class="n">user</span><span class="p">,</span> <span class="n">backend</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">"""</span>
+<span class="sd">    Persist a user id and a backend in the request. This way a user doesn't</span>
+<span class="sd">    have to reauthenticate on every request. Note that data set during</span>
+<span class="sd">    the anonymous session is retained when the user logs in.</span>
+<span class="sd">    """</span>
+    <span class="c1"># RemovedInDjango61Warning: When the deprecation ends, replace with:</span>
+    <span class="c1"># session_auth_hash = user.get_session_auth_hash()</span>
+    <span class="n">session_auth_hash</span> <span class="o">=</span> <span class="s2">""</span>
+    <span class="c1"># RemovedInDjango61Warning.</span>
+    <span class="k">if</span> <span class="n">user</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">user</span> <span class="o">=</span> <span class="n">request</span><span class="o">.</span><span class="n">user</span>
+        <span class="n">warnings</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span>
+            <span class="s2">"Fallback to request.user when user is None will be removed."</span><span class="p">,</span>
+            <span class="n">RemovedInDjango61Warning</span><span class="p">,</span>
+            <span class="n">stacklevel</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
+        <span class="p">)</span>
+
+    <span class="c1"># RemovedInDjango61Warning.</span>
+    <span class="k">if</span> <span class="nb">hasattr</span><span class="p">(</span><span class="n">user</span><span class="p">,</span> <span class="s2">"get_session_auth_hash"</span><span class="p">):</span>
+        <span class="n">session_auth_hash</span> <span class="o">=</span> <span class="n">user</span><span class="o">.</span><span class="n">get_session_auth_hash</span><span class="p">()</span>
+
+    <span class="k">if</span> <span class="n">SESSION_KEY</span> <span class="ow">in</span> <span class="n">request</span><span class="o">.</span><span class="n">session</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">_get_user_session_key</span><span class="p">(</span><span class="n">request</span><span class="p">)</span> <span class="o">!=</span> <span class="n">user</span><span class="o">.</span><span class="n">pk</span> <span class="ow">or</span> <span class="p">(</span>
+            <span class="n">session_auth_hash</span>
+            <span class="ow">and</span> <span class="ow">not</span> <span class="n">constant_time_compare</span><span class="p">(</span>
+                <span class="n">request</span><span class="o">.</span><span class="n">session</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">HASH_SESSION_KEY</span><span class="p">,</span> <span class="s2">""</span><span class="p">),</span> <span class="n">session_auth_hash</span>
+            <span class="p">)</span>
+        <span class="p">):</span>
+            <span class="c1"># To avoid reusing another user's session, create a new, empty</span>
+            <span class="c1"># session if the existing session corresponds to a different</span>
+            <span class="c1"># authenticated user.</span>
+            <span class="n">request</span><span class="o">.</span><span class="n">session</span><span class="o">.</span><span class="n">flush</span><span class="p">()</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">request</span><span class="o">.</span><span class="n">session</span><span class="o">.</span><span class="n">cycle_key</span><span class="p">()</span>
+
+    <span class="n">backend</span> <span class="o">=</span> <span class="n">_get_backend_from_user</span><span class="p">(</span><span class="n">user</span><span class="o">=</span><span class="n">user</span><span class="p">,</span> <span class="n">backend</span><span class="o">=</span><span class="n">backend</span><span class="p">)</span>
+
+    <span class="n">request</span><span class="o">.</span><span class="n">session</span><span class="p">[</span><span class="n">SESSION_KEY</span><span class="p">]</span> <span class="o">=</span> <span class="n">user</span><span class="o">.</span><span class="n">_meta</span><span class="o">.</span><span class="n">pk</span><span class="o">.</span><span class="n">value_to_string</span><span class="p">(</span><span class="n">user</span><span class="p">)</span>
+    <span class="n">request</span><span class="o">.</span><span class="n">session</span><span class="p">[</span><span class="n">BACKEND_SESSION_KEY</span><span class="p">]</span> <span class="o">=</span> <span class="n">backend</span>
+    <span class="n">request</span><span class="o">.</span><span class="n">session</span><span class="p">[</span><span class="n">HASH_SESSION_KEY</span><span class="p">]</span> <span class="o">=</span> <span class="n">session_auth_hash</span>
+    <span class="k">if</span> <span class="nb">hasattr</span><span class="p">(</span><span class="n">request</span><span class="p">,</span> <span class="s2">"user"</span><span class="p">):</span>
+        <span class="n">request</span><span class="o">.</span><span class="n">user</span> <span class="o">=</span> <span class="n">user</span>
+    <span class="n">rotate_token</span><span class="p">(</span><span class="n">request</span><span class="p">)</span>
+    <span class="n">user_logged_in</span><span class="o">.</span><span class="n">send</span><span class="p">(</span><span class="n">sender</span><span class="o">=</span><span class="n">user</span><span class="o">.</span><span class="vm">__class__</span><span class="p">,</span> <span class="n">request</span><span class="o">=</span><span class="n">request</span><span class="p">,</span> <span class="n">user</span><span class="o">=</span><span class="n">user</span><span class="p">)</span>
+
+
+<span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">alogin</span><span class="p">(</span><span class="n">request</span><span class="p">,</span> <span class="n">user</span><span class="p">,</span> <span class="n">backend</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">"""See login()."""</span>
+    <span class="c1"># RemovedInDjango61Warning: When the deprecation ends, replace with:</span>
+    <span class="c1"># session_auth_hash = user.get_session_auth_hash()</span>
+    <span class="n">session_auth_hash</span> <span class="o">=</span> <span class="s2">""</span>
+    <span class="c1"># RemovedInDjango61Warning.</span>
+    <span class="k">if</span> <span class="n">user</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">warnings</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span>
+            <span class="s2">"Fallback to request.auser() when user is None will be removed."</span><span class="p">,</span>
+            <span class="n">RemovedInDjango61Warning</span><span class="p">,</span>
+            <span class="n">stacklevel</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="n">user</span> <span class="o">=</span> <span class="k">await</span> <span class="n">request</span><span class="o">.</span><span class="n">auser</span><span class="p">()</span>
+    <span class="c1"># RemovedInDjango61Warning.</span>
+    <span class="k">if</span> <span class="nb">hasattr</span><span class="p">(</span><span class="n">user</span><span class="p">,</span> <span class="s2">"get_session_auth_hash"</span><span class="p">):</span>
+        <span class="n">session_auth_hash</span> <span class="o">=</span> <span class="n">user</span><span class="o">.</span><span class="n">get_session_auth_hash</span><span class="p">()</span>
+
+    <span class="k">if</span> <span class="k">await</span> <span class="n">request</span><span class="o">.</span><span class="n">session</span><span class="o">.</span><span class="n">ahas_key</span><span class="p">(</span><span class="n">SESSION_KEY</span><span class="p">):</span>
+        <span class="k">if</span> <span class="k">await</span> <span class="n">_aget_user_session_key</span><span class="p">(</span><span class="n">request</span><span class="p">)</span> <span class="o">!=</span> <span class="n">user</span><span class="o">.</span><span class="n">pk</span> <span class="ow">or</span> <span class="p">(</span>
+            <span class="n">session_auth_hash</span>
+            <span class="ow">and</span> <span class="ow">not</span> <span class="n">constant_time_compare</span><span class="p">(</span>
+                <span class="k">await</span> <span class="n">request</span><span class="o">.</span><span class="n">session</span><span class="o">.</span><span class="n">aget</span><span class="p">(</span><span class="n">HASH_SESSION_KEY</span><span class="p">,</span> <span class="s2">""</span><span class="p">),</span>
+                <span class="n">session_auth_hash</span><span class="p">,</span>
+            <span class="p">)</span>
+        <span class="p">):</span>
+            <span class="c1"># To avoid reusing another user's session, create a new, empty</span>
+            <span class="c1"># session if the existing session corresponds to a different</span>
+            <span class="c1"># authenticated user.</span>
+            <span class="k">await</span> <span class="n">request</span><span class="o">.</span><span class="n">session</span><span class="o">.</span><span class="n">aflush</span><span class="p">()</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="k">await</span> <span class="n">request</span><span class="o">.</span><span class="n">session</span><span class="o">.</span><span class="n">acycle_key</span><span class="p">()</span>
+
+    <span class="n">backend</span> <span class="o">=</span> <span class="n">_get_backend_from_user</span><span class="p">(</span><span class="n">user</span><span class="o">=</span><span class="n">user</span><span class="p">,</span> <span class="n">backend</span><span class="o">=</span><span class="n">backend</span><span class="p">)</span>
+
+    <span class="k">await</span> <span class="n">request</span><span class="o">.</span><span class="n">session</span><span class="o">.</span><span class="n">aset</span><span class="p">(</span><span class="n">SESSION_KEY</span><span class="p">,</span> <span class="n">user</span><span class="o">.</span><span class="n">_meta</span><span class="o">.</span><span class="n">pk</span><span class="o">.</span><span class="n">value_to_string</span><span class="p">(</span><span class="n">user</span><span class="p">))</span>
+    <span class="k">await</span> <span class="n">request</span><span class="o">.</span><span class="n">session</span><span class="o">.</span><span class="n">aset</span><span class="p">(</span><span class="n">BACKEND_SESSION_KEY</span><span class="p">,</span> <span class="n">backend</span><span class="p">)</span>
+    <span class="k">await</span> <span class="n">request</span><span class="o">.</span><span class="n">session</span><span class="o">.</span><span class="n">aset</span><span class="p">(</span><span class="n">HASH_SESSION_KEY</span><span class="p">,</span> <span class="n">session_auth_hash</span><span class="p">)</span>
+    <span class="k">if</span> <span class="nb">hasattr</span><span class="p">(</span><span class="n">request</span><span class="p">,</span> <span class="s2">"user"</span><span class="p">):</span>
+        <span class="n">request</span><span class="o">.</span><span class="n">user</span> <span class="o">=</span> <span class="n">user</span>
+    <span class="n">rotate_token</span><span class="p">(</span><span class="n">request</span><span class="p">)</span>
+    <span class="k">await</span> <span class="n">user_logged_in</span><span class="o">.</span><span class="n">asend</span><span class="p">(</span><span class="n">sender</span><span class="o">=</span><span class="n">user</span><span class="o">.</span><span class="vm">__class__</span><span class="p">,</span> <span class="n">request</span><span class="o">=</span><span class="n">request</span><span class="p">,</span> <span class="n">user</span><span class="o">=</span><span class="n">user</span><span class="p">)</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">logout</span><span class="p">(</span><span class="n">request</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">"""</span>
+<span class="sd">    Remove the authenticated user's ID from the request and flush their session</span>
+<span class="sd">    data.</span>
+<span class="sd">    """</span>
+    <span class="c1"># Dispatch the signal before the user is logged out so the receivers have a</span>
+    <span class="c1"># chance to find out *who* logged out.</span>
+    <span class="n">user</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">request</span><span class="p">,</span> <span class="s2">"user"</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">user</span><span class="p">,</span> <span class="s2">"is_authenticated"</span><span class="p">,</span> <span class="kc">True</span><span class="p">):</span>
+        <span class="n">user</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">user_logged_out</span><span class="o">.</span><span class="n">send</span><span class="p">(</span><span class="n">sender</span><span class="o">=</span><span class="n">user</span><span class="o">.</span><span class="vm">__class__</span><span class="p">,</span> <span class="n">request</span><span class="o">=</span><span class="n">request</span><span class="p">,</span> <span class="n">user</span><span class="o">=</span><span class="n">user</span><span class="p">)</span>
+    <span class="n">request</span><span class="o">.</span><span class="n">session</span><span class="o">.</span><span class="n">flush</span><span class="p">()</span>
+    <span class="k">if</span> <span class="nb">hasattr</span><span class="p">(</span><span class="n">request</span><span class="p">,</span> <span class="s2">"user"</span><span class="p">):</span>
+        <span class="kn">from</span><span class="w"> </span><span class="nn">django.contrib.auth.models</span><span class="w"> </span><span class="kn">import</span> <span class="n">AnonymousUser</span>
+
+        <span class="n">request</span><span class="o">.</span><span class="n">user</span> <span class="o">=</span> <span class="n">AnonymousUser</span><span class="p">()</span>
+
+
+<span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">alogout</span><span class="p">(</span><span class="n">request</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">"""See logout()."""</span>
+    <span class="c1"># Dispatch the signal before the user is logged out so the receivers have a</span>
+    <span class="c1"># chance to find out *who* logged out.</span>
+    <span class="n">user</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">request</span><span class="p">,</span> <span class="s2">"auser"</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">user</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">user</span> <span class="o">=</span> <span class="k">await</span> <span class="n">user</span><span class="p">()</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">user</span><span class="p">,</span> <span class="s2">"is_authenticated"</span><span class="p">,</span> <span class="kc">True</span><span class="p">):</span>
+        <span class="n">user</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="k">await</span> <span class="n">user_logged_out</span><span class="o">.</span><span class="n">asend</span><span class="p">(</span><span class="n">sender</span><span class="o">=</span><span class="n">user</span><span class="o">.</span><span class="vm">__class__</span><span class="p">,</span> <span class="n">request</span><span class="o">=</span><span class="n">request</span><span class="p">,</span> <span class="n">user</span><span class="o">=</span><span class="n">user</span><span class="p">)</span>
+    <span class="k">await</span> <span class="n">request</span><span class="o">.</span><span class="n">session</span><span class="o">.</span><span class="n">aflush</span><span class="p">()</span>
+    <span class="k">if</span> <span class="nb">hasattr</span><span class="p">(</span><span class="n">request</span><span class="p">,</span> <span class="s2">"user"</span><span class="p">):</span>
+        <span class="kn">from</span><span class="w"> </span><span class="nn">django.contrib.auth.models</span><span class="w"> </span><span class="kn">import</span> <span class="n">AnonymousUser</span>
+
+        <span class="n">request</span><span class="o">.</span><span class="n">user</span> <span class="o">=</span> <span class="n">AnonymousUser</span><span class="p">()</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">get_user_model</span><span class="p">():</span>
+<span class="w">    </span><span class="sd">"""</span>
+<span class="sd">    Return the User model that is active in this project.</span>
+<span class="sd">    """</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">django_apps</span><span class="o">.</span><span class="n">get_model</span><span class="p">(</span><span class="n">settings</span><span class="o">.</span><span class="n">AUTH_USER_MODEL</span><span class="p">,</span> <span class="n">require_ready</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+    <span class="k">except</span> <span class="ne">ValueError</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="n">ImproperlyConfigured</span><span class="p">(</span>
+            <span class="s2">"AUTH_USER_MODEL must be of the form 'app_label.model_name'"</span>
+        <span class="p">)</span>
+    <span class="k">except</span> <span class="ne">LookupError</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="n">ImproperlyConfigured</span><span class="p">(</span>
+            <span class="s2">"AUTH_USER_MODEL refers to model '</span><span class="si">%s</span><span class="s2">' that has not been installed"</span>
+            <span class="o">%</span> <span class="n">settings</span><span class="o">.</span><span class="n">AUTH_USER_MODEL</span>
+        <span class="p">)</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">get_user</span><span class="p">(</span><span class="n">request</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">"""</span>
+<span class="sd">    Return the user model instance associated with the given request session.</span>
+<span class="sd">    If no user is retrieved, return an instance of `AnonymousUser`.</span>
+<span class="sd">    """</span>
+    <span class="kn">from</span><span class="w"> </span><span class="nn">.models</span><span class="w"> </span><span class="kn">import</span> <span class="n">AnonymousUser</span>
+
+    <span class="n">user</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">user_id</span> <span class="o">=</span> <span class="n">_get_user_session_key</span><span class="p">(</span><span class="n">request</span><span class="p">)</span>
+        <span class="n">backend_path</span> <span class="o">=</span> <span class="n">request</span><span class="o">.</span><span class="n">session</span><span class="p">[</span><span class="n">BACKEND_SESSION_KEY</span><span class="p">]</span>
+    <span class="k">except</span> <span class="ne">KeyError</span><span class="p">:</span>
+        <span class="k">pass</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">backend_path</span> <span class="ow">in</span> <span class="n">settings</span><span class="o">.</span><span class="n">AUTHENTICATION_BACKENDS</span><span class="p">:</span>
+            <span class="n">backend</span> <span class="o">=</span> <span class="n">load_backend</span><span class="p">(</span><span class="n">backend_path</span><span class="p">)</span>
+            <span class="n">user</span> <span class="o">=</span> <span class="n">backend</span><span class="o">.</span><span class="n">get_user</span><span class="p">(</span><span class="n">user_id</span><span class="p">)</span>
+            <span class="c1"># Verify the session</span>
+            <span class="k">if</span> <span class="nb">hasattr</span><span class="p">(</span><span class="n">user</span><span class="p">,</span> <span class="s2">"get_session_auth_hash"</span><span class="p">):</span>
+                <span class="n">session_hash</span> <span class="o">=</span> <span class="n">request</span><span class="o">.</span><span class="n">session</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">HASH_SESSION_KEY</span><span class="p">)</span>
+                <span class="k">if</span> <span class="ow">not</span> <span class="n">session_hash</span><span class="p">:</span>
+                    <span class="n">session_hash_verified</span> <span class="o">=</span> <span class="kc">False</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="n">session_auth_hash</span> <span class="o">=</span> <span class="n">user</span><span class="o">.</span><span class="n">get_session_auth_hash</span><span class="p">()</span>
+                    <span class="n">session_hash_verified</span> <span class="o">=</span> <span class="n">constant_time_compare</span><span class="p">(</span>
+                        <span class="n">session_hash</span><span class="p">,</span> <span class="n">session_auth_hash</span>
+                    <span class="p">)</span>
+                <span class="k">if</span> <span class="ow">not</span> <span class="n">session_hash_verified</span><span class="p">:</span>
+                    <span class="c1"># If the current secret does not verify the session, try</span>
+                    <span class="c1"># with the fallback secrets and stop when a matching one is</span>
+                    <span class="c1"># found.</span>
+                    <span class="k">if</span> <span class="n">session_hash</span> <span class="ow">and</span> <span class="nb">any</span><span class="p">(</span>
+                        <span class="n">constant_time_compare</span><span class="p">(</span><span class="n">session_hash</span><span class="p">,</span> <span class="n">fallback_auth_hash</span><span class="p">)</span>
+                        <span class="k">for</span> <span class="n">fallback_auth_hash</span> <span class="ow">in</span> <span class="n">user</span><span class="o">.</span><span class="n">get_session_auth_fallback_hash</span><span class="p">()</span>
+                    <span class="p">):</span>
+                        <span class="n">request</span><span class="o">.</span><span class="n">session</span><span class="o">.</span><span class="n">cycle_key</span><span class="p">()</span>
+                        <span class="n">request</span><span class="o">.</span><span class="n">session</span><span class="p">[</span><span class="n">HASH_SESSION_KEY</span><span class="p">]</span> <span class="o">=</span> <span class="n">session_auth_hash</span>
+                    <span class="k">else</span><span class="p">:</span>
+                        <span class="n">request</span><span class="o">.</span><span class="n">session</span><span class="o">.</span><span class="n">flush</span><span class="p">()</span>
+                        <span class="n">user</span> <span class="o">=</span> <span class="kc">None</span>
+
+    <span class="k">return</span> <span class="n">user</span> <span class="ow">or</span> <span class="n">AnonymousUser</span><span class="p">()</span>
+
+
+<span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">aget_user</span><span class="p">(</span><span class="n">request</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">"""See get_user()."""</span>
+    <span class="kn">from</span><span class="w"> </span><span class="nn">.models</span><span class="w"> </span><span class="kn">import</span> <span class="n">AnonymousUser</span>
+
+    <span class="n">user</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">user_id</span> <span class="o">=</span> <span class="k">await</span> <span class="n">_aget_user_session_key</span><span class="p">(</span><span class="n">request</span><span class="p">)</span>
+        <span class="n">backend_path</span> <span class="o">=</span> <span class="k">await</span> <span class="n">request</span><span class="o">.</span><span class="n">session</span><span class="o">.</span><span class="n">aget</span><span class="p">(</span><span class="n">BACKEND_SESSION_KEY</span><span class="p">)</span>
+    <span class="k">except</span> <span class="ne">KeyError</span><span class="p">:</span>
+        <span class="k">pass</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">backend_path</span> <span class="ow">in</span> <span class="n">settings</span><span class="o">.</span><span class="n">AUTHENTICATION_BACKENDS</span><span class="p">:</span>
+            <span class="n">backend</span> <span class="o">=</span> <span class="n">load_backend</span><span class="p">(</span><span class="n">backend_path</span><span class="p">)</span>
+            <span class="n">user</span> <span class="o">=</span> <span class="k">await</span> <span class="n">backend</span><span class="o">.</span><span class="n">aget_user</span><span class="p">(</span><span class="n">user_id</span><span class="p">)</span>
+            <span class="c1"># Verify the session</span>
+            <span class="k">if</span> <span class="nb">hasattr</span><span class="p">(</span><span class="n">user</span><span class="p">,</span> <span class="s2">"get_session_auth_hash"</span><span class="p">):</span>
+                <span class="n">session_hash</span> <span class="o">=</span> <span class="k">await</span> <span class="n">request</span><span class="o">.</span><span class="n">session</span><span class="o">.</span><span class="n">aget</span><span class="p">(</span><span class="n">HASH_SESSION_KEY</span><span class="p">)</span>
+                <span class="k">if</span> <span class="ow">not</span> <span class="n">session_hash</span><span class="p">:</span>
+                    <span class="n">session_hash_verified</span> <span class="o">=</span> <span class="kc">False</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="n">session_auth_hash</span> <span class="o">=</span> <span class="n">user</span><span class="o">.</span><span class="n">get_session_auth_hash</span><span class="p">()</span>
+                    <span class="n">session_hash_verified</span> <span class="o">=</span> <span class="n">session_hash</span> <span class="ow">and</span> <span class="n">constant_time_compare</span><span class="p">(</span>
+                        <span class="n">session_hash</span><span class="p">,</span> <span class="n">user</span><span class="o">.</span><span class="n">get_session_auth_hash</span><span class="p">()</span>
+                    <span class="p">)</span>
+                <span class="k">if</span> <span class="ow">not</span> <span class="n">session_hash_verified</span><span class="p">:</span>
+                    <span class="c1"># If the current secret does not verify the session, try</span>
+                    <span class="c1"># with the fallback secrets and stop when a matching one is</span>
+                    <span class="c1"># found.</span>
+                    <span class="k">if</span> <span class="n">session_hash</span> <span class="ow">and</span> <span class="nb">any</span><span class="p">(</span>
+                        <span class="n">constant_time_compare</span><span class="p">(</span><span class="n">session_hash</span><span class="p">,</span> <span class="n">fallback_auth_hash</span><span class="p">)</span>
+                        <span class="k">for</span> <span class="n">fallback_auth_hash</span> <span class="ow">in</span> <span class="n">user</span><span class="o">.</span><span class="n">get_session_auth_fallback_hash</span><span class="p">()</span>
+                    <span class="p">):</span>
+                        <span class="k">await</span> <span class="n">request</span><span class="o">.</span><span class="n">session</span><span class="o">.</span><span class="n">acycle_key</span><span class="p">()</span>
+                        <span class="k">await</span> <span class="n">request</span><span class="o">.</span><span class="n">session</span><span class="o">.</span><span class="n">aset</span><span class="p">(</span><span class="n">HASH_SESSION_KEY</span><span class="p">,</span> <span class="n">session_auth_hash</span><span class="p">)</span>
+                    <span class="k">else</span><span class="p">:</span>
+                        <span class="k">await</span> <span class="n">request</span><span class="o">.</span><span class="n">session</span><span class="o">.</span><span class="n">aflush</span><span class="p">()</span>
+                        <span class="n">user</span> <span class="o">=</span> <span class="kc">None</span>
+
+    <span class="k">return</span> <span class="n">user</span> <span class="ow">or</span> <span class="n">AnonymousUser</span><span class="p">()</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">get_permission_codename</span><span class="p">(</span><span class="n">action</span><span class="p">,</span> <span class="n">opts</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">"""</span>
+<span class="sd">    Return the codename of the permission for the specified action.</span>
+<span class="sd">    """</span>
+    <span class="k">return</span> <span class="s2">"</span><span class="si">%s</span><span class="s2">_</span><span class="si">%s</span><span class="s2">"</span> <span class="o">%</span> <span class="p">(</span><span class="n">action</span><span class="p">,</span> <span class="n">opts</span><span class="o">.</span><span class="n">model_name</span><span class="p">)</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">update_session_auth_hash</span><span class="p">(</span><span class="n">request</span><span class="p">,</span> <span class="n">user</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">"""</span>
+<span class="sd">    Updating a user's password logs out all sessions for the user.</span>
+
+<span class="sd">    Take the current request and the updated user object from which the new</span>
+<span class="sd">    session hash will be derived and update the session hash appropriately to</span>
+<span class="sd">    prevent a password change from logging out the session from which the</span>
+<span class="sd">    password was changed.</span>
+<span class="sd">    """</span>
+    <span class="n">request</span><span class="o">.</span><span class="n">session</span><span class="o">.</span><span class="n">cycle_key</span><span class="p">()</span>
+    <span class="k">if</span> <span class="nb">hasattr</span><span class="p">(</span><span class="n">user</span><span class="p">,</span> <span class="s2">"get_session_auth_hash"</span><span class="p">)</span> <span class="ow">and</span> <span class="n">request</span><span class="o">.</span><span class="n">user</span> <span class="o">==</span> <span class="n">user</span><span class="p">:</span>
+        <span class="n">request</span><span class="o">.</span><span class="n">session</span><span class="p">[</span><span class="n">HASH_SESSION_KEY</span><span class="p">]</span> <span class="o">=</span> <span class="n">user</span><span class="o">.</span><span class="n">get_session_auth_hash</span><span class="p">()</span>
+
+
+<span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">aupdate_session_auth_hash</span><span class="p">(</span><span class="n">request</span><span class="p">,</span> <span class="n">user</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">"""See update_session_auth_hash()."""</span>
+    <span class="k">await</span> <span class="n">request</span><span class="o">.</span><span class="n">session</span><span class="o">.</span><span class="n">acycle_key</span><span class="p">()</span>
+    <span class="k">if</span> <span class="nb">hasattr</span><span class="p">(</span><span class="n">user</span><span class="p">,</span> <span class="s2">"get_session_auth_hash"</span><span class="p">)</span> <span class="ow">and</span> <span class="n">request</span><span class="o">.</span><span class="n">user</span> <span class="o">==</span> <span class="n">user</span><span class="p">:</span>
+        <span class="k">await</span> <span class="n">request</span><span class="o">.</span><span class="n">session</span><span class="o">.</span><span class="n">aset</span><span class="p">(</span><span class="n">HASH_SESSION_KEY</span><span class="p">,</span> <span class="n">user</span><span class="o">.</span><span class="n">get_session_auth_hash</span><span class="p">())</span>
+</pre></div>
+
+          </div>
+          
+        </div>
+      </div>
+      <div class="sphinxsidebar" role="navigation" aria-label="Main">
+        <div class="sphinxsidebarwrapper">
+<h1 class="logo"><a href="../../../index.html">The Daily Brief</a></h1>
+
+
+
+
+
+
+
+
+
+<search id="searchbox" style="display: none" role="search">
+    <div class="searchformwrapper">
+    <form class="search" action="../../../search.html" method="get">
+      <input type="text" name="q" aria-labelledby="searchlabel" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="Search"/>
+      <input type="submit" value="Go" />
+    </form>
+    </div>
+</search>
+<script>document.getElementById('searchbox').style.display = "block"</script><h3>Navigation</h3>
+<p class="caption" role="heading"><span class="caption-text">Contents</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../../../getting_started.html">Getting started</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../architecture.html">Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../api.html">API reference</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../modules.html">Python modules</a></li>
+</ul>
+
+<div class="relations">
+<h3>Related Topics</h3>
+<ul>
+  <li><a href="../../../index.html">Documentation overview</a><ul>
+  <li><a href="../../index.html">Module code</a><ul>
+  </ul></li>
+  </ul></li>
+</ul>
+</div>
+
+
+
+
+
+
+
+
+        </div>
+      </div>
+      <div class="clearer"></div>
+    </div>
+    <div class="footer">
+      &#169;.
+      
+      |
+      Powered by <a href="https://www.sphinx-doc.org/">Sphinx 9.2.0</a>
+      &amp; <a href="https://alabaster.readthedocs.io">Alabaster 1.0.0</a>
+      
+    </div>
+
+    
+
+    
+  </body>
+</html>

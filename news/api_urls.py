@@ -1,3 +1,5 @@
+"""Route version-one REST API endpoints for newsroom resources."""
+
 from django.urls import path
 from .api_views import (
     ArticleListCreateView, ArticleDetailView, SubscribedArticleListView,
