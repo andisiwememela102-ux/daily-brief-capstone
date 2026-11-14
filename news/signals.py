@@ -1,3 +1,5 @@
+"""Handle role-group assignment and post-approval integrations."""
+
 import logging
 import requests
 from django.conf import settings
@@ -12,12 +14,14 @@ logger = logging.getLogger(__name__)
 
 @receiver(pre_save, sender=Article)
 def remember_approval_state(sender, instance, **kwargs):
+    """Remember whether the article was approved before the current save."""
     instance._was_approved = False
     if instance.pk:
         instance._was_approved = sender.objects.filter(pk=instance.pk, approved=True).exists()
 
 @receiver(post_save, sender=Article)
 def distribute_approved_article(sender, instance, created, **kwargs):
+    """Email subscribers and log an article when it first becomes approved."""
     if not instance.approved or getattr(instance, '_was_approved', False):
         return
     if instance.publisher_id:
@@ -49,6 +53,7 @@ def distribute_approved_article(sender, instance, created, **kwargs):
 
 @receiver(post_save, sender=User)
 def assign_role_group(sender, instance, created, **kwargs):
+    """Keep a user's Django group and model permissions aligned with their role."""
     # Keep group membership in sync if an administrator changes a user's role.
     instance.groups.remove(*Group.objects.filter(name__in=['Reader', 'Editor', 'Journalist']))
     group, _ = Group.objects.get_or_create(name=instance.role.title())
