@@ -1,3 +1,5 @@
+"""Serialize newsroom models for the REST API."""
+
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
 from .models import Article, Newsletter, Publisher
@@ -5,16 +7,22 @@ from .models import Article, Newsletter, Publisher
 User = get_user_model()
 
 class UserSerializer(serializers.ModelSerializer):
+    """Expose the public profile fields used in API responses."""
+
     class Meta:
         model = User
         fields = ('id', 'username', 'email', 'role')
 
 class PublisherSerializer(serializers.ModelSerializer):
+    """Serialize publisher names and descriptions."""
+
     class Meta:
         model = Publisher
         fields = ('id', 'name', 'description')
 
 class ArticleSerializer(serializers.ModelSerializer):
+    """Serialize article content with read-only source and approval fields."""
+
     author = UserSerializer(read_only=True)
     publisher = PublisherSerializer(read_only=True)
 
@@ -24,12 +32,15 @@ class ArticleSerializer(serializers.ModelSerializer):
         read_only_fields = ('id', 'author', 'publisher', 'created_at', 'approved')
 
     def validate(self, attrs):
+        """Ensure an existing article's source relationship remains valid."""
         # Article ownership is assigned by the view and cannot be transferred via the API.
         if self.instance and bool(self.instance.author_id) == bool(self.instance.publisher_id):
             raise serializers.ValidationError('The article must have exactly one source.')
         return attrs
 
 class NewsletterSerializer(serializers.ModelSerializer):
+    """Serialize newsletters and allow links only to approved articles."""
+
     author = UserSerializer(read_only=True)
     articles = serializers.PrimaryKeyRelatedField(many=True, queryset=Article.objects.filter(approved=True), required=False)
 
